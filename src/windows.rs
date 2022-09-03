@@ -34,16 +34,30 @@ pub fn setup_ui_task(cc: &CreationContext) -> Box<dyn App> {
             thread::spawn(move || {
                 if let Err(err) = rdev::listen(move |event| {
                     match event.event_type {
-                        rdev::EventType::ButtonPress(button) => {
-                            if button == rdev::Button::Left {
+                        rdev::EventType::ButtonPress(button) => match button {
+                            rdev::Button::Left => {
                                 mouse_state.lock().unwrap().down();
                             }
-                        }
-                        rdev::EventType::ButtonRelease(button) => {
-                            if button == rdev::Button::Left {
-                                mouse_state.lock().unwrap().release()
+                            rdev::Button::Middle => {
+                                mouse_state.lock().unwrap().down_middle();
                             }
-                        }
+                            rdev::Button::Right => {
+                                mouse_state.lock().unwrap().down_right();
+                            }
+                            _ => {}
+                        },
+                        rdev::EventType::ButtonRelease(button) => match button {
+                            rdev::Button::Left => {
+                                mouse_state.lock().unwrap().release();
+                            }
+                            rdev::Button::Middle => {
+                                mouse_state.lock().unwrap().release_middle();
+                            }
+                            rdev::Button::Right => {
+                                mouse_state.lock().unwrap().release_right();
+                            }
+                            _ => {}
+                        },
                         rdev::EventType::MouseMove { x: _, y: _ } => {
                             mouse_state.lock().unwrap().moving()
                         }
@@ -57,38 +71,75 @@ pub fn setup_ui_task(cc: &CreationContext) -> Box<dyn App> {
 
         {
             thread::spawn(move || {
+                let mut do_translate = false;
+                let mut translated = false;
+
                 let mut clipboard_last = "".to_string();
+                let mut accumulated_text = "".to_string();
+                let mut accumulated_last = "".to_string();
+
                 loop {
                     if mouse_state.lock().unwrap().is_select() && !ctx.input().pointer.has_pointer()
                     {
                         if let Some(text_new) = ctrl_c() {
                             if text_new != clipboard_last {
                                 clipboard_last = text_new.clone();
-                                // 新翻译任务 UI
-                                {
-                                    let mut state = state.lock().unwrap();
-                                    state.text = text_new.clone();
-                                    state.link_color = LINK_COLOR_DOING;
-                                }
+                                accumulated_text += &text_new;
 
-                                // 开始翻译
-                                let result = {
-                                    let (source_lang, target_lang) = {
-                                        let state = state.lock().unwrap();
-                                        (state.source_lang, state.target_lang)
-                                    };
-                                    deepl::translate(&get_api(), text_new, target_lang, source_lang)
-                                        .unwrap_or("翻译接口失效，请更换".to_string())
-                                };
-
-                                // 翻译结束 UI
-                                {
-                                    let mut state = state.lock().unwrap();
-                                    state.text = result;
-                                    state.link_color = LINK_COLOR_COMMON;
-                                }
+                                let mut state = state.lock().unwrap();
+                                state.text = accumulated_text.clone();
                             }
                         }
+                    }
+
+                    // 中键开始翻译
+                    if mouse_state.lock().unwrap().middle_clicked() {
+                        println!("middle clicked");
+                        do_translate = true;
+                    }
+
+                    // 右键清除历史
+                    if mouse_state.lock().unwrap().right_clicked() {
+                        println!("right clicked");
+                        accumulated_text = "".to_string();
+                        accumulated_last = "".to_string();
+                        clipboard_last = "".to_string();
+
+                        if !translated {
+                            let mut state = state.lock().unwrap();
+                            state.text = "".to_string();
+                        }
+                        translated = false;
+                        do_translate = false;
+                    }
+
+                    // translate
+                    if do_translate == true && accumulated_text != accumulated_last {
+                        accumulated_last = accumulated_text.clone();
+                        // 新翻译任务 UI
+                        {
+                            let mut state = state.lock().unwrap();
+                            state.link_color = LINK_COLOR_DOING;
+                        }
+
+                        // 开始翻译
+                        let result = {
+                            let (source_lang, target_lang) = {
+                                let state = state.lock().unwrap();
+                                (state.source_lang, state.target_lang)
+                            };
+                            deepl::translate(&get_api(), accumulated_last.clone(), target_lang, source_lang)
+                                .unwrap_or("翻译接口失效，请更换".to_string())
+                        };
+
+                        // 翻译结束 UI
+                        {
+                            let mut state = state.lock().unwrap();
+                            state.text = result;
+                            state.link_color = LINK_COLOR_COMMON;
+                        }
+                        do_translate = false;
+                        translated = true;
                     }
                     sleep(Duration::from_millis(100));
                 }
